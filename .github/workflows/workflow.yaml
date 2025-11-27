@@ -25,6 +25,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -166,8 +167,13 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add test-report.md || true
-          git commit -m "Automated test report [skip ci]" || exit 0
-          git push origin HEAD:${{ github.event.pull_request.head.ref }} || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Automated test report [skip ci]" || exit 0
+            BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+            git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+          fi
 
       - name: Process PR comments
         if: github.event_name == 'pull_request' && steps.validate-conditions.outputs.branch_valid == 'true' && steps.validate-conditions.outputs.title_valid == 'true' && steps.validate-conditions.outputs.config_valid == 'true' && steps.validate-conditions.outputs.token_valid == 'true'
@@ -190,9 +196,14 @@ jobs:
               done
               git config --local user.email "action@github.com"
               git config --local user.name "GitHub Action"
-              git add -A
-              git commit -m "Automated fix from PR [skip ci]" || exit 0
-              git push origin HEAD:${{ github.event.pull_request.head.ref }} || true
+              git add -A || true
+              if git diff --staged --quiet; then
+                echo "No changes to commit"
+              else
+                git commit -m "Automated fix from PR [skip ci]" || exit 0
+                BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+                git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+              fi
             fi
           fi
 
@@ -244,9 +255,14 @@ jobs:
           echo "Status: [+] Passed" >> security-report.md
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add security-report.md
-          git commit -m "Security scan results [skip ci]" || exit 0
-          git push origin HEAD:${{ github.event.pull_request.head.ref }} || true
+          git add security-report.md || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Security scan results [skip ci]" || exit 0
+            BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+            git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+          fi
 
   auto-merge:
     runs-on: ubuntu-latest
