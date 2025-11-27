@@ -23,9 +23,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -172,7 +173,13 @@ jobs:
           else
             git commit -m "Automated test report [skip ci]" || exit 0
             BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-            git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+            REMOTE_URL="${{ github.event.pull_request.head.repo.clone_url }}"
+            # Try to push to the branch
+            git push origin "HEAD:$BRANCH_NAME" 2>&1 || {
+              echo "Direct push failed, trying alternative method..."
+              git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+              git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, but continuing..."
+            }
           fi
 
       - name: Process PR comments
@@ -202,7 +209,9 @@ jobs:
               else
                 git commit -m "Automated fix from PR [skip ci]" || exit 0
                 BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-                git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+                # Ensure remote is set correctly
+                git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+                git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, but continuing..."
               fi
             fi
           fi
@@ -236,7 +245,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Run security checks
         run: |
@@ -261,19 +273,24 @@ jobs:
           else
             git commit -m "Security scan results [skip ci]" || exit 0
             BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
-            git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, continuing..."
+            # Ensure remote is set correctly
+            git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+            git push origin "HEAD:$BRANCH_NAME" || echo "Push failed, but continuing..."
           fi
 
   auto-merge:
     runs-on: ubuntu-latest
     needs: [code-review, security-scan]
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && needs.code-review.outputs.branch_valid == 'true' && needs.code-review.outputs.title_valid == 'true' && needs.code-review.outputs.config_valid == 'true' && needs.code-review.outputs.token_valid == 'true'
+    if: github.event_name == 'pull_request' && needs.code-review.outputs.branch_valid == 'true' && needs.code-review.outputs.title_valid == 'true' && needs.code-review.outputs.config_valid == 'true' && needs.code-review.outputs.token_valid == 'true'
     steps:
       - name: Auto-merge PR if checks pass
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            // Wait a moment for all checks to complete
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
             // Check if all checks passed
             const { data: checks } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
@@ -281,31 +298,47 @@ jobs:
               ref: context.payload.pull_request.head.sha
             });
             
-            const allPassed = checks.check_runs.every(check => 
+            console.log(`Found ${checks.check_runs.length} check runs`);
+            
+            const allPassed = checks.check_runs.length > 0 && checks.check_runs.every(check => 
               check.status === 'completed' && check.conclusion === 'success'
             );
             
             if (allPassed) {
-              // Approve the PR
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                event: 'APPROVE',
-                body: '[+] All checks passed. Auto-approving PR.'
-              });
+              console.log('All checks passed, proceeding with merge...');
               
-              // Attempt to merge (will fail if branch protection requires manual merge)
+              // Approve the PR
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  event: 'APPROVE',
+                  body: '[+] All checks passed. Auto-approving PR.'
+                });
+                console.log('PR approved successfully');
+              } catch (error) {
+                console.log('Could not approve PR:', error.message);
+              }
+              
+              // Attempt to merge
               try {
                 await github.rest.pulls.merge({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   pull_number: context.payload.pull_request.number,
-                  merge_method: 'squash'
+                  merge_method: 'squash',
+                  commit_title: `Merge PR #${context.payload.pull_request.number}: ${context.payload.pull_request.title}`
                 });
                 console.log('PR merged successfully');
               } catch (error) {
-                console.log('Could not auto-merge (may require manual merge):', error.message);
+                console.log('Could not auto-merge:', error.message);
+                console.log('This may be due to branch protection rules requiring manual merge');
               }
+            } else {
+              console.log('Not all checks passed. Skipping merge.');
+              checks.check_runs.forEach(check => {
+                console.log(`  - ${check.name}: ${check.status}/${check.conclusion || 'pending'}`);
+              });
             }
 
