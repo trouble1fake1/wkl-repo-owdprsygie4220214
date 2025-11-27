@@ -1,7 +1,7 @@
 name: Automated Code Review and Testing
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
@@ -245,4 +245,5 @@ jobs:
             echo "Validation checks completed with failures"
             exit 1
           fi
+
 
